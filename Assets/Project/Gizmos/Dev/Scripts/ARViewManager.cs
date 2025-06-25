@@ -25,6 +25,8 @@ namespace Gizmos
 
         public GameObject NamePanel;
 
+        public GameObject DeletePanel;
+
         public GameObject EnvironmentPanel;
 
         public GameObject InputFieldWarning;
@@ -36,6 +38,8 @@ namespace Gizmos
         public Text TrackingHelperText;
 
         public Text DebugText;
+
+        public GameObject Actions;
 
         public Button SaveButton;
 
@@ -101,6 +105,8 @@ namespace Gizmos
 
         private ARAnchor _anchor = null;
 
+        private bool _hasEnvironment = false;
+
         private HostCloudAnchorPromise _hostPromise = null;
 
         private HostCloudAnchorResult _hostResult = null;
@@ -126,6 +132,8 @@ namespace Gizmos
         private string _nextTypeOfNote;
 
         private bool _mapingVisible = true;
+
+        private string _selectedNote;
 
         private class ObjectNotePositionData
         {
@@ -161,8 +169,6 @@ namespace Gizmos
         private Dictionary<string, Transform> _anchorMap = new Dictionary<string, Transform>();
 
         private HashSet<string> _restoredNotes = new HashSet<string>();
-
-        private HashSet<string> _restoredInfras = new HashSet<string>();
 
         private Transform _anchorTransform;
 
@@ -205,6 +211,11 @@ namespace Gizmos
                 return;
             }
 
+            if (_selectedEnvironment.Length > 0)
+            {
+                lastEnvironmentName = _selectedEnvironment;
+            }
+
             string existingIds = PlayerPrefs.GetString(lastEnvironmentName, "");
             List<string> idList = new List<string>(existingIds.Split(','));
             if (!idList.Contains(newAnchorId))
@@ -241,6 +252,7 @@ namespace Gizmos
             _hostPromise = null;
             _hostResult = null;
             _hostCoroutine = null;
+            _hasEnvironment = false;
             _resolvePromises.Clear();
             _resolveResults.Clear();
             _resolveCoroutines.Clear();
@@ -258,6 +270,7 @@ namespace Gizmos
                     ReturnToHomePage("Modo de aplicação inválido. Retornando à página inicial...");
                     break;
                 case PersistentCloudAnchorsController.ApplicationMode.Hosting:
+                    Actions.SetActive(false);
                     EnvironmentPanel.SetActive(true);
                     SelectEnvironmentPanel.SetActive(false);
                     InstructionText.text = "Detectando superfície plana...";
@@ -323,6 +336,18 @@ namespace Gizmos
                 }
             }
 
+            GameObject[] notes = GameObject.FindGameObjectsWithTag("Note");
+            foreach (GameObject note in notes)
+            {
+                Destroy(note);
+            }
+
+            LineRenderer[] lineRenderers = UnityEngine.Object.FindObjectsByType<LineRenderer>(FindObjectsSortMode.None);
+            foreach (LineRenderer lr in lineRenderers)
+            {
+                Destroy(lr.gameObject);
+            }
+
             _resolveResults.Clear();
             UpdatePlaneVisibility(false);
         }
@@ -375,10 +400,36 @@ namespace Gizmos
             if (Controller.Mode == PersistentCloudAnchorsController.ApplicationMode.Resolving)
             {
                 ResolvingCloudAnchors();
+
+                Touch touch;
+                if (Input.touchCount < 1 ||
+                    (touch = Input.GetTouch(0)).phase != TouchPhase.Began)
+                {
+                    return;
+                }
+
+                if (EventSystem.current.IsPointerOverGameObject(touch.fingerId))
+                {
+                    return;
+                }
+
+                Ray ray = Camera.main.ScreenPointToRay(touch.position);
+                RaycastHit hit;
+
+                if (Physics.Raycast(ray, out hit))
+                {
+                    GameObject touchedObject = hit.transform.gameObject;
+
+                    if (touchedObject.CompareTag("Note"))
+                    {
+                        _selectedNote = touchedObject.name.Replace("object", ""); ;
+                        DeletePanel.SetActive(true);
+                    }
+                }
             }
             else if (Controller.Mode == PersistentCloudAnchorsController.ApplicationMode.Hosting)
             {
-                if (_anchor == null)
+                if (_anchor == null && _hasEnvironment)
                 {
                     Touch touch;
                     if (Input.touchCount < 1 ||
@@ -417,7 +468,7 @@ namespace Gizmos
                 }
 
                 planeType = plane.alignment;
-                var hitPose = hitResults[0].pose; ;
+                var hitPose = hitResults[0].pose;
 
                 if (Application.platform == RuntimePlatform.IPhonePlayer)
                 {
@@ -775,6 +826,10 @@ namespace Gizmos
 
             GameObject newObject = Instantiate(_nextObjectToInstantiate, _nextPositionToObjectInstantiate, Quaternion.identity);
 
+            string noteId = System.Guid.NewGuid().ToString();
+
+            newObject.name = noteId;
+
             if (noteInputField.Length > 0)
             {
                 GameObject canvasObject = GameObject.Find("Canvas3D");
@@ -782,6 +837,7 @@ namespace Gizmos
                 if (canvasObject != null)
                 {
                     Image newNote = Instantiate(NoteToInstantiate, canvasObject.transform, false);
+                    newNote.name = noteId;
 
                     Renderer mainRenderer = newObject.GetComponent<Renderer>();
                     float offsetY = mainRenderer.bounds.size.y + 0.1f;
@@ -803,8 +859,6 @@ namespace Gizmos
             }
 
             List<string> savedNoteKeys = GetSavedNoteKeys();
-
-            string noteId = System.Guid.NewGuid().ToString();
 
             foreach (Transform anchorTransform in _anchorsResolved)
             {
@@ -920,14 +974,21 @@ namespace Gizmos
         {
             List<ARRaycastHit> hits = new List<ARRaycastHit>();
 
+            Vector3 forwardPosition = Camera.main.transform.position + Camera.main.transform.forward * 0.5f;
+
             if (Controller.RaycastManager.Raycast(new Vector2(Screen.width / 2, Screen.height / 2), hits, UnityEngine.XR.ARSubsystems.TrackableType.PlaneWithinBounds))
             {
                 Pose hitPose = hits[0].pose;
                 _nextPositionToObjectInstantiate = hitPose.position;
-                _nextObjectToInstantiate = objectPrefab;
-                _nextTypeOfNote = nextTypeOfNote;
-                NotePanel.SetActive(true);
             }
+            else
+            {
+                _nextPositionToObjectInstantiate = forwardPosition;
+            }
+
+            _nextObjectToInstantiate = objectPrefab;
+            _nextTypeOfNote = nextTypeOfNote;
+            NotePanel.SetActive(true);
         }
 
         public void PositionObjectNoteDanger() => PositionNoteObject(ObjectToInstantiatePrefabDangerNote, "danger");
@@ -991,7 +1052,7 @@ namespace Gizmos
                             string jsonData = PlayerPrefs.GetString(uniqueKey);
                             ObjectNotePositionData data = JsonUtility.FromJson<ObjectNotePositionData>(jsonData);
 
-                            string uniqueKeyNote = "ObjectNote_" + _selectedEnvironment + "_" + data.noteId;
+                            string uniqueKeyNote = "ObjectNote_" + _selectedEnvironment + "_" + data.noteId + "_" + anchorId;
 
                             if (_restoredNotes.Contains(uniqueKeyNote))
                             {
@@ -1023,6 +1084,7 @@ namespace Gizmos
       data.noteId
   ));
                                         mainObject = Instantiate(ObjectToInstantiatePrefabDangerNote, anchor.transform);
+                                        mainObject.name = data.noteId;
                                     }
                                 }
                                 else
@@ -1047,6 +1109,7 @@ namespace Gizmos
       data.noteId
   ));
                                         mainObject = Instantiate(ObjectToInstantiatePrefabWarningNote, anchor.transform);
+                                        mainObject.name = data.noteId;
                                     }
                                 }
                                 else
@@ -1071,6 +1134,7 @@ namespace Gizmos
       data.noteId
   ));
                                         mainObject = Instantiate(ObjectToInstantiatePrefabInfoNote, anchor.transform);
+                                        mainObject.name = data.noteId;
                                     }
                                 }
                                 else
@@ -1082,7 +1146,7 @@ namespace Gizmos
                             if (mainObject != null)
                             {
                                 _restoredNotes.Add(uniqueKeyNote);
-                                DrawSmartCurve(anchorTransform.position, mainObject.transform.position);
+                                DrawSmartCurve(anchorTransform.position, mainObject.transform.position, data.noteId);
 
                                 if (data.text.Length > 0)
                                 {
@@ -1091,6 +1155,7 @@ namespace Gizmos
                                     if (canvasObject != null)
                                     {
                                         Image newNote = Instantiate(NoteToInstantiate, canvasObject.transform, false);
+                                        newNote.name = data.noteId;
 
                                         Renderer mainRenderer = mainObject.GetComponent<Renderer>();
                                         float offsetY = mainRenderer.bounds.size.y + 0.1f;
@@ -1117,7 +1182,7 @@ namespace Gizmos
             }
         }
 
-        private void DrawSmartCurve(Vector3 start, Vector3 end)
+        private void DrawSmartCurve(Vector3 start, Vector3 end, string name)
         {
             GameObject lineObject = new GameObject("SmartCurve");
             LineRenderer lineRenderer = lineObject.AddComponent<LineRenderer>();
@@ -1141,6 +1206,8 @@ namespace Gizmos
             }
 
             lineRenderer.SetPositions(points);
+            lineObject.name = name;
+
         }
 
         private bool NeedsCurve(Vector3 start, Vector3 end)
@@ -1180,6 +1247,45 @@ namespace Gizmos
 
             return curvePoints;
         }
+
+        public void DeleteNote()
+        {
+            GameObject[] allObjects = GameObject.FindObjectsByType<GameObject>(FindObjectsSortMode.None);
+
+            foreach (GameObject obj in allObjects)
+            {
+                if (obj.name == _selectedNote)
+                {
+                    Destroy(obj);
+                }
+            }
+
+            List<string> savedNoteKeys = GetSavedNoteKeys();
+            List<string> keysToRemove = new List<string>();
+
+            foreach (string key in savedNoteKeys)
+            {
+                if (key.Contains("_" + _selectedNote + "_"))
+                {
+                    PlayerPrefs.DeleteKey(key);
+                    keysToRemove.Add(key);
+
+                    var data = _savedNotePositions.FirstOrDefault(d => d.noteId == _selectedNote);
+                    if (data != null)
+                        _savedNotePositions.Remove(data);
+                }
+            }
+
+            foreach (string key in keysToRemove)
+            {
+                savedNoteKeys.Remove(key);
+            }
+
+            PlayerPrefs.SetString("SavedNoteKeys_" + _selectedEnvironment, string.Join(";", savedNoteKeys));
+            PlayerPrefs.Save();
+            DeletePanel.SetActive(false);
+        }
+
         public void SaveEnvironmentName()
         {
             string environmentName = EnvironmentInputField.text;
@@ -1200,6 +1306,7 @@ namespace Gizmos
             PlayerPrefs.Save();
 
             EnvironmentPanel.SetActive(false);
+            _hasEnvironment = true;
             Debug.Log("Novo ambiente salvo: " + uniqueEnvironmentName);
         }
 
@@ -1230,8 +1337,8 @@ namespace Gizmos
         public void SelectEnvironment()
         {
             _selectedEnvironment = EnvironmentDropdown.options[EnvironmentDropdown.value].text;
+            _hasEnvironment = true;
             SelectEnvironmentPanel.SetActive(false);
-            Debug.Log(_selectedEnvironment);
         }
 
         private void DoReturnToHomePage()
@@ -1247,6 +1354,12 @@ namespace Gizmos
         public void HideSetEnviromnent()
         {
             EnvironmentPanel.SetActive(false);
+            SelectEnvironmentPanel.SetActive(true);
+        }
+
+        public void HideDeleteNote()
+        {
+            DeletePanel.SetActive(false);
         }
 
         private void SetSaveButtonActive(bool active)
