@@ -1,0 +1,1 @@
+![Descrição alternativa](gif.gif)
